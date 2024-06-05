@@ -4,12 +4,18 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define PORT 8889
 #define BUF_SIZE 1024
 
+int client_sock = -1; // Socket para la conexión del cliente
+
 void *handle_client(void *arg);
 void execute_command(char *command);
+void *get_user_input(void *arg);
+void connect_to_server(char *ip_address);
 
 // Declaraciones de funciones específicas para cada comando
 void open_connection(char *ip_address);
@@ -23,7 +29,7 @@ void put_file(char *filename);
 void print_working_directory();
 
 int main(int argc, char *argv[]) {
-    int server_sock, client_sock;
+    int server_sock;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_size;
     pthread_t t_id;
@@ -55,15 +61,22 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
+    // Thread to handle user input
+    pthread_create(&t_id, NULL, get_user_input, NULL);
+    pthread_detach(t_id);
+
+    // Accept client connections
     while (1) {
         client_addr_size = sizeof(client_addr);
-        client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_addr_size);
-        if (client_sock == -1) {
+        int client_sock_temp = accept(server_sock, (struct sockaddr*)&client_addr, &client_addr_size);
+        if (client_sock_temp == -1) {
             perror("accept() error");
             continue;
         }
 
-        pthread_create(&t_id, NULL, handle_client, (void*)&client_sock);
+        int *client_sock_ptr = malloc(sizeof(int));
+        *client_sock_ptr = client_sock_temp;
+        pthread_create(&t_id, NULL, handle_client, (void*)client_sock_ptr);
         pthread_detach(t_id);
     }
 
@@ -73,6 +86,7 @@ int main(int argc, char *argv[]) {
 
 void *handle_client(void *arg) {
     int client_sock = *((int*)arg);
+    free(arg);
     char command[BUF_SIZE];
 
     while (1) {
@@ -85,6 +99,17 @@ void *handle_client(void *arg) {
         command[str_len] = 0;
         execute_command(command);
     }
+}
+
+void *get_user_input(void *arg) {
+    char command[BUF_SIZE];
+
+    while (1) {
+        printf("bftp> ");
+        fgets(command, BUF_SIZE, stdin);
+        execute_command(command);
+    }
+    return NULL;
 }
 
 void execute_command(char *command) {
@@ -137,49 +162,122 @@ void execute_command(char *command) {
 
 // Implementaciones de las funciones específicas para cada comando
 void open_connection(char *ip_address) {
-    printf("open command with ip address: %s\n", ip_address);
-    // Implementar la lógica de conexión
+    if (client_sock != -1) {
+        printf("Ya hay una conexión abierta. Primero cierre la conexión actual.\n");
+        return;
+    }
+
+    connect_to_server(ip_address);
+}
+
+void connect_to_server(char *ip_address) {
+    struct sockaddr_in server_addr;
+
+    client_sock = socket(PF_INET, SOCK_STREAM, 0);
+    if (client_sock == -1) {
+        perror("socket() error");
+        return;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr(ip_address);
+    server_addr.sin_port = htons(PORT);
+
+    if (connect(client_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("connect() error");
+        close(client_sock);
+        client_sock = -1;
+        return;
+    }
+
+    printf("Conectado a %s\n", ip_address);
 }
 
 void close_connection() {
-    printf("close command\n");
-    // Implementar la lógica de cerrar la conexión
+    if (client_sock == -1) {
+        printf("No hay ninguna conexión abierta.\n");
+        return;
+    }
+
+    close(client_sock);
+    client_sock = -1;
+    printf("Conexión cerrada.\n");
 }
 
 void quit_program() {
-    printf("quit command\n");
-    // Implementar la lógica de terminar el programa
+    if (client_sock != -1) {
+        close(client_sock);
+    }
+    printf("Terminando el programa.\n");
     exit(0);
 }
 
 void change_directory(char *directory) {
-    printf("cd command with directory: %s\n", directory);
-    // Implementar la lógica de cambiar de directorio
+    if (client_sock == -1) {
+        printf("No hay ninguna conexión abierta.\n");
+        return;
+    }
+
+    char command[BUF_SIZE];
+    snprintf(command, sizeof(command), "cd %s", directory);
+    write(client_sock, command, strlen(command));
 }
 
 void get_file(char *filename) {
-    printf("get command with filename: %s\n", filename);
-    // Implementar la lógica de obtener un archivo
+    if (client_sock == -1) {
+        printf("No hay ninguna conexión abierta.\n");
+        return;
+    }
+
+    char command[BUF_SIZE];
+    snprintf(command, sizeof(command), "get %s", filename);
+    write(client_sock, command, strlen(command));
+
+    // Aquí debe implementarse la lógica para recibir el archivo desde el servidor
 }
 
 void change_local_directory(char *directory) {
-    printf("lcd command with directory: %s\n", directory);
-    // Implementar la lógica de cambiar de directorio local
+    if (chdir(directory) == -1) {
+        perror("chdir() error");
+    }
 }
 
 void list_files() {
-    printf("ls command\n");
-    // Implementar la lógica de listar archivos
+    if (client_sock == -1) {
+        printf("No hay ninguna conexión abierta.\n");
+        return;
+    }
+
+    char command[BUF_SIZE] = "ls";
+    write(client_sock, command, strlen(command));
+
+    // Aquí debe implementarse la lógica para recibir y mostrar la lista de archivos
 }
 
 void put_file(char *filename) {
-    printf("put command with filename: %s\n", filename);
-    // Implementar la lógica de enviar un archivo
+    if (client_sock == -1) {
+        printf("No hay ninguna conexión abierta.\n");
+        return;
+    }
+
+    char command[BUF_SIZE];
+    snprintf(command, sizeof(command), "put %s", filename);
+    write(client_sock, command, strlen(command));
+
+    // Aquí debe implementarse la lógica para enviar el archivo al servidor
 }
 
 void print_working_directory() {
-    printf("pwd command\n");
-    // Implementar la lógica de mostrar el directorio activo
+    if (client_sock == -1) {
+        printf("No hay ninguna conexión abierta.\n");
+        return;
+    }
+
+    char command[BUF_SIZE] = "pwd";
+    write(client_sock, command, strlen(command));
+
+    // Aquí debe implementarse la lógica para recibir y mostrar el directorio actual
 }
 
 //gcc bftp.c -o bftp -pthread
