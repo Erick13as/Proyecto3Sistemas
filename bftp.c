@@ -22,7 +22,7 @@ void connect_to_server(char *ip_address);
 void open_connection(char *ip_address);
 void close_connection();
 void quit_program();
-void change_directory(char *directory);
+void change_directory(char *directory, int sock);
 void get_file(char *filename);
 void change_local_directory(char *directory);
 void list_files();
@@ -135,21 +135,7 @@ void execute_command(char *command, int sock) {
     } else if (strcmp(token, "cd") == 0) {
         char *directory = strtok(NULL, " ");
         if (directory) {
-            if (sock == -1) {
-                change_directory(directory);
-            } else {
-                char command[BUF_SIZE];
-                snprintf(command, sizeof(command), "cd %s", directory);
-                write(sock, command, strlen(command));
-
-                // Recibir respuesta del servidor
-                char response[BUF_SIZE];
-                int str_len = read(sock, response, sizeof(response) - 1);
-                if (str_len > 0) {
-                    response[str_len] = 0;
-                    printf("%s\n", response);
-                }
-            }
+            change_directory(directory, sock);
         }
     } else if (strcmp(token, "get") == 0) {
         char *filename = strtok(NULL, " ");
@@ -162,20 +148,7 @@ void execute_command(char *command, int sock) {
             change_local_directory(directory);
         }
     } else if (strcmp(token, "ls") == 0) {
-        if (sock == -1) {
-            list_files();
-        } else {
-            char command[BUF_SIZE] = "ls";
-            write(sock, command, strlen(command));
-
-            // Recibir respuesta del servidor
-            char response[BUF_SIZE];
-            int str_len = read(sock, response, sizeof(response) - 1);
-            if (str_len > 0) {
-                response[str_len] = 0;
-                printf("%s\n", response);
-            }
-        }
+        list_files(sock);
     } else if (strcmp(token, "put") == 0) {
         char *filename = strtok(NULL, " ");
         if (filename) {
@@ -200,6 +173,7 @@ void execute_command(char *command, int sock) {
         printf("Unknown command: %s\n", token);
     }
 }
+
 
 // Implementaciones de las funciones específicas para cada comando
 void open_connection(char *ip_address) {
@@ -254,11 +228,25 @@ void quit_program() {
     exit(0);
 }
 
-void change_directory(char *directory) {
-    if (chdir(directory) == 0) {
-        printf("Directorio cambiado a %s\n", directory);
+void change_directory(char *directory, int sock) {
+    if (sock == -1) {
+        if (chdir(directory) == 0) {
+            printf("Directorio cambiado a %s\n", directory);
+        } else {
+            perror("chdir() error");
+        }
     } else {
-        perror("chdir() error");
+        char command[BUF_SIZE];
+        snprintf(command, sizeof(command), "cd %s", directory);
+        write(sock, command, strlen(command));
+
+        // Recibir respuesta del servidor
+        char response[BUF_SIZE];
+        int str_len = read(sock, response, sizeof(response) - 1);
+        if (str_len > 0) {
+            response[str_len] = 0;
+            printf("%s\n", response);
+        }
     }
 }
 
@@ -281,17 +269,30 @@ void change_local_directory(char *directory) {
     }
 }
 
-void list_files() {
-    DIR *d;
-    struct dirent *dir;
-    d = opendir(".");
-    if (d) {
-        while ((dir = readdir(d)) != NULL) {
-            printf("%s\n", dir->d_name);
+void list_files(int sock) {
+    if (sock == -1) {
+        DIR *d;
+        struct dirent *dir;
+        d = opendir(".");
+        if (d) {
+            while ((dir = readdir(d)) != NULL) {
+                printf("%s\n", dir->d_name);
+            }
+            closedir(d);
+        } else {
+            perror("opendir() error");
         }
-        closedir(d);
     } else {
-        perror("opendir() error");
+        char command[BUF_SIZE] = "ls";
+        write(sock, command, strlen(command));
+
+        // Recibir respuesta del servidor
+        char response[BUF_SIZE];
+        int str_len = read(sock, response, sizeof(response) - 1);
+        if (str_len > 0) {
+            response[str_len] = 0;
+            printf("%s\n", response);
+        }
     }
 }
 
