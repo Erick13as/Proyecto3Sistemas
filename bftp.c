@@ -222,6 +222,14 @@ void change_directory(char *directory) {
     char command[BUF_SIZE];
     snprintf(command, sizeof(command), "cd %s", directory);
     write(client_sock, command, strlen(command));
+
+    // Recibir respuesta del servidor
+    char response[BUF_SIZE];
+    int str_len = read(client_sock, response, sizeof(response) - 1);
+    if (str_len > 0) {
+        response[str_len] = 0;
+        printf("%s\n", response);
+    }
 }
 
 void get_file(char *filename) {
@@ -252,7 +260,13 @@ void list_files() {
     char command[BUF_SIZE] = "ls";
     write(client_sock, command, strlen(command));
 
-    // Aquí debe implementarse la lógica para recibir y mostrar la lista de archivos
+    // Recibir respuesta del servidor
+    char response[BUF_SIZE];
+    int str_len = read(client_sock, response, sizeof(response) - 1);
+    if (str_len > 0) {
+        response[str_len] = 0;
+        printf("%s\n", response);
+    }
 }
 
 void put_file(char *filename) {
