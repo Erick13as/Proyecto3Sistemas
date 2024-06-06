@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #define PORT 8889
 #define BUF_SIZE 1024
@@ -13,7 +14,7 @@
 int client_sock = -1; // Socket para la conexión del cliente
 
 void *handle_client(void *arg);
-void execute_command(char *command);
+void execute_command(char *command, int sock);
 void *get_user_input(void *arg);
 void connect_to_server(char *ip_address);
 
@@ -97,7 +98,7 @@ void *handle_client(void *arg) {
         }
 
         command[str_len] = 0;
-        execute_command(command);
+        execute_command(command, client_sock);
     }
 }
 
@@ -107,12 +108,12 @@ void *get_user_input(void *arg) {
     while (1) {
         printf("bftp> ");
         fgets(command, BUF_SIZE, stdin);
-        execute_command(command);
+        execute_command(command, client_sock);
     }
     return NULL;
 }
 
-void execute_command(char *command) {
+void execute_command(char *command, int sock) {
     // Remove trailing newline character
     command[strcspn(command, "\n")] = 0;
 
@@ -134,7 +135,21 @@ void execute_command(char *command) {
     } else if (strcmp(token, "cd") == 0) {
         char *directory = strtok(NULL, " ");
         if (directory) {
-            change_directory(directory);
+            if (sock == -1) {
+                change_directory(directory);
+            } else {
+                char command[BUF_SIZE];
+                snprintf(command, sizeof(command), "cd %s", directory);
+                write(sock, command, strlen(command));
+
+                // Recibir respuesta del servidor
+                char response[BUF_SIZE];
+                int str_len = read(sock, response, sizeof(response) - 1);
+                if (str_len > 0) {
+                    response[str_len] = 0;
+                    printf("%s\n", response);
+                }
+            }
         }
     } else if (strcmp(token, "get") == 0) {
         char *filename = strtok(NULL, " ");
@@ -147,14 +162,40 @@ void execute_command(char *command) {
             change_local_directory(directory);
         }
     } else if (strcmp(token, "ls") == 0) {
-        list_files();
+        if (sock == -1) {
+            list_files();
+        } else {
+            char command[BUF_SIZE] = "ls";
+            write(sock, command, strlen(command));
+
+            // Recibir respuesta del servidor
+            char response[BUF_SIZE];
+            int str_len = read(sock, response, sizeof(response) - 1);
+            if (str_len > 0) {
+                response[str_len] = 0;
+                printf("%s\n", response);
+            }
+        }
     } else if (strcmp(token, "put") == 0) {
         char *filename = strtok(NULL, " ");
         if (filename) {
             put_file(filename);
         }
     } else if (strcmp(token, "pwd") == 0) {
-        print_working_directory();
+        if (sock == -1) {
+            print_working_directory();
+        } else {
+            char command[BUF_SIZE] = "pwd";
+            write(sock, command, strlen(command));
+
+            // Recibir respuesta del servidor
+            char response[BUF_SIZE];
+            int str_len = read(sock, response, sizeof(response) - 1);
+            if (str_len > 0) {
+                response[str_len] = 0;
+                printf("%s\n", response);
+            }
+        }
     } else {
         printf("Unknown command: %s\n", token);
     }
@@ -214,21 +255,10 @@ void quit_program() {
 }
 
 void change_directory(char *directory) {
-    if (client_sock == -1) {
-        printf("No hay ninguna conexión abierta.\n");
-        return;
-    }
-
-    char command[BUF_SIZE];
-    snprintf(command, sizeof(command), "cd %s", directory);
-    write(client_sock, command, strlen(command));
-
-    // Recibir respuesta del servidor
-    char response[BUF_SIZE];
-    int str_len = read(client_sock, response, sizeof(response) - 1);
-    if (str_len > 0) {
-        response[str_len] = 0;
-        printf("%s\n", response);
+    if (chdir(directory) == 0) {
+        printf("Directorio cambiado a %s\n", directory);
+    } else {
+        perror("chdir() error");
     }
 }
 
@@ -252,20 +282,16 @@ void change_local_directory(char *directory) {
 }
 
 void list_files() {
-    if (client_sock == -1) {
-        printf("No hay ninguna conexión abierta.\n");
-        return;
-    }
-
-    char command[BUF_SIZE] = "ls";
-    write(client_sock, command, strlen(command));
-
-    // Recibir respuesta del servidor
-    char response[BUF_SIZE];
-    int str_len = read(client_sock, response, sizeof(response) - 1);
-    if (str_len > 0) {
-        response[str_len] = 0;
-        printf("%s\n", response);
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(".");
+    if (d) {
+        while ((dir = readdir(d)) != NULL) {
+            printf("%s\n", dir->d_name);
+        }
+        closedir(d);
+    } else {
+        perror("opendir() error");
     }
 }
 
@@ -283,17 +309,14 @@ void put_file(char *filename) {
 }
 
 void print_working_directory() {
-    if (client_sock == -1) {
-        printf("No hay ninguna conexión abierta.\n");
-        return;
+    char cwd[BUF_SIZE];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        printf("%s\n", cwd);
+    } else {
+        perror("getcwd() error");
     }
-
-    char command[BUF_SIZE] = "pwd";
-    write(client_sock, command, strlen(command));
-
-    // Aquí debe implementarse la lógica para recibir y mostrar el directorio actual
 }
 
 //gcc bftp.c -o bftp -pthread
 //./bftp
-//open 192.168.0.20
+//open 192.168.0.15
