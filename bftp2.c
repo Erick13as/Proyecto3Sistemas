@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <dirent.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define PORT 8889
 #define BUFFER_SIZE 1024
@@ -21,6 +23,7 @@ void *handle_connection(void *ptr);
 void *handle_commands(void *ptr);
 void execute_remote_command(const char *command, char *response, size_t size);
 void list_local_files(char *response, size_t size);
+void handle_file_transfer(int client_socket, const char *command);
 
 int main() {
     int server_socket;
@@ -80,10 +83,13 @@ void *handle_connection(void *ptr) {
         }
         buffer[read_size] = '\0';
 
-        char response[BUFFER_SIZE] = {0};
-        execute_remote_command(buffer, response, sizeof(response));
-
-        send(connection->sock, response, strlen(response), 0);
+        if (strncmp(buffer, "get ", 4) == 0 || strncmp(buffer, "put ", 4) == 0) {
+            handle_file_transfer(connection->sock, buffer);
+        } else {
+            char response[BUFFER_SIZE] = {0};
+            execute_remote_command(buffer, response, sizeof(response));
+            send(connection->sock, response, strlen(response), 0);
+        }
     }
 
     close(connection->sock);
@@ -137,6 +143,40 @@ void list_local_files(char *response, size_t size) {
         strncat(response, "\n", size - strlen(response) - 1);
     }
     closedir(dir);
+}
+
+void handle_file_transfer(int client_socket, const char *command) {
+    char buffer[BUFFER_SIZE];
+    int file;
+    ssize_t bytes;
+
+    if (strncmp(command, "get ", 4) == 0) {
+        const char *filename = command + 4;
+        file = open(filename, O_RDONLY);
+        if (file < 0) {
+            perror("Failed to open file");
+            return;
+        }
+
+        while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
+            send(client_socket, buffer, bytes, 0);
+        }
+
+        close(file);
+    } else if (strncmp(command, "put ", 4) == 0) {
+        const char *filename = command + 4;
+        file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (file < 0) {
+            perror("Failed to open file");
+            return;
+        }
+
+        while ((bytes = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
+            write(file, buffer, bytes);
+        }
+
+        close(file);
+    }
 }
 
 void *handle_commands(void *ptr) {
@@ -228,6 +268,37 @@ void *handle_commands(void *ptr) {
             char response[BUFFER_SIZE] = {0};
             list_local_files(response, sizeof(response));
             printf("%s", response);
+        } else if (strncmp(command, "get ", 4) == 0 || strncmp(command, "put ", 4) == 0) {
+            send(client_socket, command, strlen(command), 0);
+            if (strncmp(command, "get ", 4) == 0) {
+                char filename[BUFFER_SIZE];
+                strcpy(filename, command + 4);
+                int file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (file < 0) {
+                    perror("Failed to open file");
+                    continue;
+                }
+                char buffer[BUFFER_SIZE];
+                ssize_t bytes;
+                while ((bytes = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
+                    write(file, buffer, bytes);
+                }
+                close(file);
+            } else if (strncmp(command, "put ", 4) == 0) {
+                char filename[BUFFER_SIZE];
+                strcpy(filename, command + 4);
+                int file = open(filename, O_RDONLY);
+                if (file < 0) {
+                    perror("Failed to open file");
+                    continue;
+                }
+                char buffer[BUFFER_SIZE];
+                ssize_t bytes;
+                while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
+                    send(client_socket, buffer, bytes, 0);
+                }
+                close(file);
+            }
         } else if (client_socket != -1) {
             send(client_socket, command, strlen(command), 0);
             char response[BUFFER_SIZE] = {0};
