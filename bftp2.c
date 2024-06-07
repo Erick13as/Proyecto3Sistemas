@@ -2,134 +2,193 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <sys/socket.h>
 #include <arpa/inet.h>
+#include <pthread.h>
+#include <dirent.h>
 
 #define PORT 8889
-#define MAX_CLIENTS 5
-#define MAX_COMMAND_SIZE 100
+#define BUFFER_SIZE 1024
 
-// Estructura para los datos de cada cliente
 typedef struct {
-    int socket;
-    char current_directory[100];
-} ClientData;
+    int sock;
+    struct sockaddr_in address;
+} connection_t;
 
-// Función para manejar la conexión con un cliente
-void *handle_client(void *arg) {
-    ClientData *client = (ClientData *)arg;
-    char command[MAX_COMMAND_SIZE];
+int client_socket = -1;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-    while (1) {
-        printf("btfp> ");
-        fgets(command, MAX_COMMAND_SIZE, stdin);
-        command[strlen(command) - 1] = '\0'; // Eliminar el carácter de nueva línea
-
-        if (strcmp(command, "quit") == 0) {
-            close(client->socket);
-            pthread_exit(NULL);
-        } else if (strcmp(command, "pwd") == 0) {
-            // Enviar comando pwd al cliente remoto
-            // (tendrías que implementar esta función)
-        } else if (strncmp(command, "open ", 5) == 0) {
-            // Establecer conexión con el servidor remoto
-            char *ip_address = strtok(command + 5, ":");
-            char *port_str = strtok(NULL, ":");
-            int port = atoi(port_str);
-            int remote_socket;
-            struct sockaddr_in server_address;
-
-            // Crear socket para la conexión remota
-            remote_socket = socket(AF_INET, SOCK_STREAM, 0);
-            if (remote_socket == -1) {
-                perror("Error al crear el socket remoto");
-                continue;
-            }
-
-            // Configurar la estructura sockaddr_in
-            server_address.sin_family = AF_INET;
-            server_address.sin_addr.s_addr = inet_addr(ip_address);
-            server_address.sin_port = htons(port);
-
-            // Conectar al servidor remoto
-            if (connect(remote_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
-                perror("Error al conectar al servidor remoto");
-                close(remote_socket);
-                continue;
-            }
-
-            printf("Conectado al servidor remoto\n");
-            client->socket = remote_socket;
-        } else if (strcmp(command, "close") == 0) {
-            // Cerrar la conexión con el servidor remoto
-            close(client->socket);
-            printf("Conexión cerrada\n");
-        } else if (strncmp(command, "cd ", 3) == 0) {
-            // Cambiar de directorio remoto
-            // (tendrías que implementar esta función)
-        } else {
-            printf("Comando no reconocido\n");
-        }
-    }
-}
+void *handle_connection(void *ptr);
+void *handle_commands(void *ptr);
+void execute_remote_command(const char *command, char *response, size_t size);
 
 int main() {
-    int server_socket, client_socket, c;
-    struct sockaddr_in server, client;
-    pthread_t thread_id;
-    ClientData clients[MAX_CLIENTS];
-    int num_clients = 0;
+    int server_socket;
+    struct sockaddr_in server_address;
+    pthread_t thread;
 
-    // Crear socket servidor
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        perror("Error al crear el socket");
+    if (server_socket < 0) {
+        perror("Could not create socket");
         exit(EXIT_FAILURE);
     }
 
-    // Configurar la estructura sockaddr_in
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(PORT);
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = INADDR_ANY;
+    server_address.sin_port = htons(PORT);
 
-    // Enlazar el socket a la dirección y puerto especificados
-    if (bind(server_socket, (struct sockaddr *)&server, sizeof(server)) < 0) {
-        perror("Error al enlazar");
+    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+        perror("Bind failed");
+        close(server_socket);
         exit(EXIT_FAILURE);
     }
 
-    // Escuchar por conexiones entrantes
-    listen(server_socket, MAX_CLIENTS);
+    if (listen(server_socket, 5) < 0) {
+        perror("Listen failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
 
-    // Aceptar conexiones entrantes
-    c = sizeof(struct sockaddr_in);
-    while ((client_socket = accept(server_socket, (struct sockaddr *)&client, (socklen_t *)&c))) {
-        printf("Nueva conexión aceptada\n");
+    pthread_create(&thread, NULL, handle_commands, NULL);
 
-        // Verificar si hay espacio para otro cliente
-        if (num_clients >= MAX_CLIENTS) {
-            printf("No hay espacio para más clientes\n");
-            close(client_socket);
+    while (1) {
+        connection_t *connection = malloc(sizeof(connection_t));
+        socklen_t address_len = sizeof(connection->address);
+
+        connection->sock = accept(server_socket, (struct sockaddr *)&connection->address, &address_len);
+        if (connection->sock <= 0) {
+            free(connection);
+        } else {
+            pthread_t conn_thread;
+            pthread_create(&conn_thread, NULL, handle_connection, (void *)connection);
+            pthread_detach(conn_thread);
+        }
+    }
+
+    close(server_socket);
+    return 0;
+}
+
+void *handle_connection(void *ptr) {
+    connection_t *connection = (connection_t *)ptr;
+    char buffer[BUFFER_SIZE];
+
+    while (1) {
+        int read_size = recv(connection->sock, buffer, sizeof(buffer), 0);
+        if (read_size <= 0) {
+            break;
+        }
+        buffer[read_size] = '\0';
+
+        char response[BUFFER_SIZE];
+        execute_remote_command(buffer, response, sizeof(response));
+
+        send(connection->sock, response, strlen(response), 0);
+    }
+
+    close(connection->sock);
+    free(connection);
+    return NULL;
+}
+
+void execute_remote_command(const char *command, char *response, size_t size) {
+    FILE *fp;
+    char path[BUFFER_SIZE];
+
+    fp = popen(command, "r");
+    if (fp == NULL) {
+        snprintf(response, size, "Failed to execute command\n");
+        return;
+    }
+
+    while (fgets(path, sizeof(path) - 1, fp) != NULL) {
+        strncat(response, path, size - strlen(response) - 1);
+    }
+    pclose(fp);
+}
+
+void *handle_commands(void *ptr) {
+    char command[BUFFER_SIZE];
+
+    while (1) {
+        printf("> ");
+        fflush(stdout);
+        if (fgets(command, sizeof(command), stdin) == NULL) {
             continue;
         }
 
-        // Agregar el nuevo cliente a la lista
-        clients[num_clients].socket = client_socket;
-        strcpy(clients[num_clients].current_directory, "/"); // Directorio inicial
-        num_clients++;
+        command[strcspn(command, "\n")] = '\0';
 
-        // Crear un hilo para manejar la conexión con el cliente
-        if (pthread_create(&thread_id, NULL, handle_client, (void *)&clients[num_clients - 1]) < 0) {
-            perror("Error al crear el hilo");
-            exit(EXIT_FAILURE);
+        if (strncmp(command, "open", 4) == 0) {
+            char *ip = strtok(command + 5, " ");
+            if (ip) {
+                struct sockaddr_in server_addr;
+
+                pthread_mutex_lock(&mutex);
+                if (client_socket != -1) {
+                    printf("Already connected to a remote server. Please close the connection first.\n");
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                client_socket = socket(AF_INET, SOCK_STREAM, 0);
+                if (client_socket < 0) {
+                    perror("Socket creation failed");
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                server_addr.sin_family = AF_INET;
+                server_addr.sin_port = htons(PORT);
+
+                if (inet_pton(AF_INET, ip, &server_addr.sin_addr) <= 0) {
+                    perror("Invalid address");
+                    close(client_socket);
+                    client_socket = -1;
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                if (connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+                    perror("Connection failed");
+                    close(client_socket);
+                    client_socket = -1;
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                printf("Connected to %s\n", ip);
+                pthread_mutex_unlock(&mutex);
+            }
+        } else if (strcmp(command, "close") == 0) {
+            pthread_mutex_lock(&mutex);
+            if (client_socket != -1) {
+                close(client_socket);
+                client_socket = -1;
+                printf("Connection closed\n");
+            } else {
+                printf("No active connection to close\n");
+            }
+            pthread_mutex_unlock(&mutex);
+        } else if (strcmp(command, "quit") == 0) {
+            pthread_mutex_lock(&mutex);
+            if (client_socket != -1) {
+                close(client_socket);
+            }
+            printf("Exiting...\n");
+            pthread_mutex_unlock(&mutex);
+            exit(EXIT_SUCCESS);
+        } else if (client_socket != -1) {
+            send(client_socket, command, strlen(command), 0);
+            char response[BUFFER_SIZE] = {0};
+            int read_size = recv(client_socket, response, sizeof(response) - 1, 0);
+            if (read_size > 0) {
+                response[read_size] = '\0';
+                printf("%s", response);
+            }
+        } else {
+            printf("No active connection to send command to\n");
         }
     }
 
-    if (client_socket < 0) {
-        perror("Error al aceptar la conexión");
-        exit(EXIT_FAILURE);
-    }
-
-    return 0;
+    return NULL;
 }
