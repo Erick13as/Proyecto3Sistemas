@@ -28,7 +28,7 @@ void get_file(char *filename);
 void change_local_directory(char *directory);
 void list_files(int sock);
 void put_file(char *filename);
-void print_working_directory();
+void print_working_directory(int sock);
 
 int main(int argc, char *argv[]) {
     int server_sock;
@@ -159,20 +159,7 @@ void execute_command(char *command, int sock) {
             put_file(filename);
         }
     } else if (strcmp(token, "pwd") == 0) {
-        if (sock == -1) {
-            print_working_directory();
-        } else {
-            char command[BUF_SIZE] = "pwd";
-            write(sock, command, strlen(command));
-
-            // Recibir respuesta del servidor
-            char response[BUF_SIZE];
-            int str_len = read(sock, response, sizeof(response) - 1);
-            if (str_len > 0) {
-                response[str_len] = 0;
-                printf("%s\n", response);
-            }
-        }
+        print_working_directory(sock);
     } else {
         printf("Unknown command: %s\n", token);
     }
@@ -379,12 +366,25 @@ void put_file(char *filename) {
     printf("Archivo %s enviado correctamente.\n", filename);
 }
 
-void print_working_directory() {
-    char cwd[BUF_SIZE];
-    if (getcwd(cwd, sizeof(cwd)) != NULL) {
-        printf("%s\n", cwd);
+void print_working_directory(int sock) {
+    if (sock == -1) {
+        char cwd[BUF_SIZE];
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+            printf("%s\n", cwd);
+        } else {
+            perror("getcwd() error");
+        }
     } else {
-        perror("getcwd() error");
+        char command[BUF_SIZE] = "pwd";
+        write(sock, command, strlen(command));
+
+        // Recibir respuesta del servidor
+        char response[BUF_SIZE];
+        int str_len = read(sock, response, sizeof(response) - 1);
+        if (str_len > 0) {
+            response[str_len] = 0;
+            printf("Directorio remoto actual: %s\n", response);
+        }
     }
 }
 
