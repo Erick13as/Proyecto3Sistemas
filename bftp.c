@@ -210,6 +210,22 @@ void connect_to_server(char *ip_address) {
     }
 
     printf("Conectado a %s\n", ip_address);
+
+    // Cambiar al directorio home en el servidor remoto
+    char command[BUF_SIZE] = "cd ~";
+    write(client_sock, command, strlen(command));
+
+    // Obtener y mostrar el directorio remoto actual
+    snprintf(command, sizeof(command), "pwd");
+    write(client_sock, command, strlen(command));
+
+    // Recibir respuesta del servidor
+    char response[BUF_SIZE];
+    int str_len = read(client_sock, response, sizeof(response) - 1);
+    if (str_len > 0) {
+        response[str_len] = 0;
+        printf("Directorio remoto actual: %s\n", response);
+    }
 }
 
 void close_connection() {
