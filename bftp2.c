@@ -7,10 +7,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #define PORT 8889
 #define BUFFER_SIZE 1024
-#define END_OF_FILE "EOF"
 
 typedef struct {
     int sock;
@@ -159,12 +159,20 @@ void handle_file_transfer(int client_socket, const char *command) {
             return;
         }
 
+        struct stat file_stat;
+        if (fstat(file, &file_stat) < 0) {
+            perror("Failed to get file stat");
+            close(file);
+            return;
+        }
+
+        // Enviar el tamaño del archivo
+        off_t file_size = file_stat.st_size;
+        send(client_socket, &file_size, sizeof(file_size), 0);
+
         while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
             send(client_socket, buffer, bytes, 0);
         }
-
-        // Señal de fin de archivo
-        send(client_socket, END_OF_FILE, strlen(END_OF_FILE), 0);
 
         close(file);
     } else if (strncmp(command, "put ", 4) == 0) {
@@ -175,12 +183,18 @@ void handle_file_transfer(int client_socket, const char *command) {
             return;
         }
 
-        while ((bytes = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
-            // Comprobar señal de fin de archivo
-            if (strncmp(buffer, END_OF_FILE, strlen(END_OF_FILE)) == 0) {
+        // Recibir el tamaño del archivo
+        off_t file_size;
+        recv(client_socket, &file_size, sizeof(file_size), 0);
+
+        off_t bytes_received = 0;
+        while (bytes_received < file_size) {
+            bytes = recv(client_socket, buffer, sizeof(buffer), 0);
+            if (bytes <= 0) {
                 break;
             }
             write(file, buffer, bytes);
+            bytes_received += bytes;
         }
 
         close(file);
@@ -286,6 +300,11 @@ void *handle_commands(void *ptr) {
 
             char filename[BUFFER_SIZE];
             strcpy(filename, command + 4);
+
+            // Recibir el tamaño del archivo
+            off_t file_size;
+            recv(client_socket, &file_size, sizeof(file_size), 0);
+
             int file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (file < 0) {
                 perror("Failed to open file");
@@ -294,13 +313,16 @@ void *handle_commands(void *ptr) {
 
             char buffer[BUFFER_SIZE];
             ssize_t bytes;
-            while ((bytes = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
-                // Check for end-of-file signal
-                if (strncmp(buffer, END_OF_FILE, strlen(END_OF_FILE)) == 0) {
+            off_t bytes_received = 0;
+            while (bytes_received < file_size) {
+                bytes = recv(client_socket, buffer, sizeof(buffer), 0);
+                if (bytes <= 0) {
                     break;
                 }
                 write(file, buffer, bytes);
+                bytes_received += bytes;
             }
+
             close(file);
         } else if (strncmp(command, "put ", 4) == 0) {
             if (client_socket == -1) {
@@ -316,16 +338,24 @@ void *handle_commands(void *ptr) {
                 continue;
             }
 
+            struct stat file_stat;
+            if (fstat(file, &file_stat) < 0) {
+                perror("Failed to get file stat");
+                close(file);
+                continue;
+            }
+
+            off_t file_size = file_stat.st_size;
             send(client_socket, command, strlen(command), 0);
+
+            // Enviar el tamaño del archivo
+            send(client_socket, &file_size, sizeof(file_size), 0);
 
             char buffer[BUFFER_SIZE];
             ssize_t bytes;
             while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
                 send(client_socket, buffer, bytes, 0);
             }
-
-            // Señal de fin de archivo
-            send(client_socket, END_OF_FILE, strlen(END_OF_FILE), 0);
 
             close(file);
         } else if (client_socket != -1) {
