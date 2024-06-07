@@ -79,7 +79,7 @@ void *handle_connection(void *ptr) {
         }
         buffer[read_size] = '\0';
 
-        char response[BUFFER_SIZE];
+        char response[BUFFER_SIZE] = {0};
         execute_remote_command(buffer, response, sizeof(response));
 
         send(connection->sock, response, strlen(response), 0);
@@ -93,8 +93,23 @@ void *handle_connection(void *ptr) {
 void execute_remote_command(const char *command, char *response, size_t size) {
     FILE *fp;
     char path[BUFFER_SIZE];
+    char cmd[BUFFER_SIZE];
 
-    fp = popen(command, "r");
+    if (strncmp(command, "cd ", 3) == 0) {
+        char *dir = command + 3;
+        if (chdir(dir) == 0) {
+            snprintf(response, size, "Changed directory to %s\n", dir);
+        } else {
+            snprintf(response, size, "Failed to change directory to %s\n", dir);
+        }
+        return;
+    } else if (strcmp(command, "ls") == 0) {
+        snprintf(cmd, sizeof(cmd), "ls");
+    } else {
+        snprintf(cmd, sizeof(cmd), "%s", command);
+    }
+
+    fp = popen(cmd, "r");
     if (fp == NULL) {
         snprintf(response, size, "Failed to execute command\n");
         return;
@@ -177,6 +192,13 @@ void *handle_commands(void *ptr) {
             printf("Exiting...\n");
             pthread_mutex_unlock(&mutex);
             exit(EXIT_SUCCESS);
+        } else if (strncmp(command, "lcd ", 4) == 0) {
+            char *dir = command + 4;
+            if (chdir(dir) == 0) {
+                printf("Changed local directory to %s\n", dir);
+            } else {
+                perror("Failed to change local directory");
+            }
         } else if (client_socket != -1) {
             send(client_socket, command, strlen(command), 0);
             char response[BUFFER_SIZE] = {0};
