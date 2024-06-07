@@ -2,144 +2,133 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #define PORT 8889
 #define MAX_CLIENTS 5
-#define BUFFER_SIZE 1024
+#define MAX_COMMAND_SIZE 100
 
-int server_sockfd;
+// Estructura para los datos de cada cliente
+typedef struct {
+    int socket;
+    char current_directory[100];
+} ClientData;
 
-// Función para manejar la lógica de "open"
-int handle_open(const char *ip_address) {
-    printf("Connecting to %s...\n", ip_address);
-
-    // Create socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("Socket creation failed");
-        return -1;
-    }
-
-    // Set server address
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = inet_addr(ip_address);
-    server_addr.sin_port = htons(PORT);
-
-    // Connect to server
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Connection failed");
-        close(sockfd);
-        return -1;
-    }
-
-    printf("Connected to %s:%d\n", ip_address, PORT);
-
-    return sockfd;
-}
-
+// Función para manejar la conexión con un cliente
 void *handle_client(void *arg) {
-    int client_sockfd = *((int *)arg);
-    char buffer[BUFFER_SIZE];
+    ClientData *client = (ClientData *)arg;
+    char command[MAX_COMMAND_SIZE];
 
-    // Handle client commands
     while (1) {
-        // Read client command
-        memset(buffer, 0, BUFFER_SIZE);
-        read(client_sockfd, buffer, BUFFER_SIZE);
+        printf("btfp> ");
+        fgets(command, MAX_COMMAND_SIZE, stdin);
+        command[strlen(command) - 1] = '\0'; // Eliminar el carácter de nueva línea
 
-        // Process command
-        if (strcmp(buffer, "quit\n") == 0 || strcmp(buffer, "quit\r\n") == 0) {
-            break;  // Exit thread
-        } else if (strncmp(buffer, "open ", 5) == 0) {
-            char *ip_address = buffer + 5; // Skip "open "
-            ip_address[strlen(ip_address) - 1] = '\0'; // Remove newline character
-            int remote_sockfd = handle_open(ip_address);
-            if (remote_sockfd >= 0) {
-                // Forward communication between client and remote server
-                while (1) {
-                    ssize_t bytes_received = recv(remote_sockfd, buffer, BUFFER_SIZE, 0);
-                    if (bytes_received <= 0) {
-                        perror("Error receiving data from server");
-                        close(remote_sockfd);
-                        close(client_sockfd);
-                        return NULL;
-                    }
-                    send(client_sockfd, buffer, bytes_received, 0);
-                }
-            } else {
-                write(client_sockfd, "Connection failed\n", strlen("Connection failed\n"));
+        if (strcmp(command, "quit") == 0) {
+            close(client->socket);
+            pthread_exit(NULL);
+        } else if (strcmp(command, "pwd") == 0) {
+            // Enviar comando pwd al cliente remoto
+            // (tendrías que implementar esta función)
+        } else if (strncmp(command, "open ", 5) == 0) {
+            // Establecer conexión con el servidor remoto
+            char *ip_address = strtok(command + 5, " ");
+            int port = atoi(strtok(NULL, " "));
+            int remote_socket;
+            struct sockaddr_in server_address;
+
+            // Crear socket para la conexión remota
+            remote_socket = socket(AF_INET, SOCK_STREAM, 0);
+            if (remote_socket == -1) {
+                perror("Error al crear el socket remoto");
+                continue;
             }
-        } else if (strcmp(buffer, "close\n") == 0 || strcmp(buffer, "close\r\n") == 0) {
-            break;  // Close connection
+
+            // Configurar la estructura sockaddr_in
+            server_address.sin_family = AF_INET;
+            server_address.sin_addr.s_addr = inet_addr(ip_address);
+            server_address.sin_port = htons(port);
+
+            // Conectar al servidor remoto
+            if (connect(remote_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+                perror("Error al conectar al servidor remoto");
+                close(remote_socket);
+                continue;
+            }
+
+            printf("Conectado al servidor remoto\n");
+            client->socket = remote_socket;
+        } else if (strcmp(command, "close") == 0) {
+            // Cerrar la conexión con el servidor remoto
+            close(client->socket);
+            printf("Conexión cerrada\n");
+        } else if (strncmp(command, "cd ", 3) == 0) {
+            // Cambiar de directorio remoto
+            // (tendrías que implementar esta función)
         } else {
-            // Handle other commands
-            // Example: echo command
-            write(client_sockfd, buffer, strlen(buffer));
+            printf("Comando no reconocido\n");
         }
     }
-
-    // Close client socket
-    close(client_sockfd);
-    return NULL;
 }
 
 int main() {
-    // Server socket
-    struct sockaddr_in server_addr;
-    int client_sockfd;
-    pthread_t client_thread;
+    int server_socket, client_socket, c;
+    struct sockaddr_in server, client;
+    pthread_t thread_id;
+    ClientData clients[MAX_CLIENTS];
+    int num_clients = 0;
 
-    // Create server socket
-    server_sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_sockfd < 0) {
-        perror("Server socket creation failed");
+    // Crear socket servidor
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
+        perror("Error al crear el socket");
         exit(EXIT_FAILURE);
     }
 
-    // Set server address
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
+    // Configurar la estructura sockaddr_in
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
 
-    // Bind server socket
-    if (bind(server_sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Binding failed");
+    // Enlazar el socket a la dirección y puerto especificados
+    if (bind(server_socket, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        perror("Error al enlazar");
         exit(EXIT_FAILURE);
     }
 
-    // Listen for connections
-    if (listen(server_sockfd, MAX_CLIENTS) < 0) {
-        perror("Listening failed");
-        exit(EXIT_FAILURE);
-    }
+    // Escuchar por conexiones entrantes
+    listen(server_socket, MAX_CLIENTS);
 
-    printf("Server listening on port %d...\n", PORT);
+    // Aceptar conexiones entrantes
+    c = sizeof(struct sockaddr_in);
+    while ((client_socket = accept(server_socket, (struct sockaddr *)&client, (socklen_t *)&c))) {
+        printf("Nueva conexión aceptada\n");
 
-    // Accept connections and create client threads
-    while (1) {
-        // Accept client connection
-        client_sockfd = accept(server_sockfd, NULL, NULL);
-        if (client_sockfd < 0) {
-            perror("Acceptance failed");
-            exit(EXIT_FAILURE);
+        // Verificar si hay espacio para otro cliente
+        if (num_clients >= MAX_CLIENTS) {
+            printf("No hay espacio para más clientes\n");
+            close(client_socket);
+            continue;
         }
 
-        // Create thread to handle client
-        if (pthread_create(&client_thread, NULL, handle_client, &client_sockfd) != 0) {
-            perror("Client thread creation failed");
+        // Agregar el nuevo cliente a la lista
+        clients[num_clients].socket = client_socket;
+        strcpy(clients[num_clients].current_directory, "/"); // Directorio inicial
+        num_clients++;
+
+        // Crear un hilo para manejar la conexión con el cliente
+        if (pthread_create(&thread_id, NULL, handle_client, (void *)&clients[num_clients - 1]) < 0) {
+            perror("Error al crear el hilo");
             exit(EXIT_FAILURE);
         }
     }
 
-    // Close server socket
-    close(server_sockfd);
+    if (client_socket < 0) {
+        perror("Error al aceptar la conexión");
+        exit(EXIT_FAILURE);
+    }
 
     return 0;
 }
