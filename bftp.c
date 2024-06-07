@@ -12,6 +12,7 @@
 #define BUF_SIZE 1024
 
 int client_sock = -1; // Socket para la conexión del cliente
+pthread_mutex_t lock;
 
 void *handle_client(void *arg);
 void execute_command(char *command, int sock);
@@ -25,7 +26,7 @@ void quit_program();
 void change_directory(char *directory, int sock);
 void get_file(char *filename);
 void change_local_directory(char *directory);
-void list_files();
+void list_files(int sock);
 void put_file(char *filename);
 void print_working_directory();
 
@@ -34,6 +35,8 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_size;
     pthread_t t_id;
+
+    pthread_mutex_init(&lock, NULL);
 
     // Create server socket
     server_sock = socket(PF_INET, SOCK_STREAM, 0);
@@ -82,6 +85,7 @@ int main(int argc, char *argv[]) {
     }
 
     close(server_sock);
+    pthread_mutex_destroy(&lock);
     return 0;
 }
 
@@ -174,7 +178,6 @@ void execute_command(char *command, int sock) {
     }
 }
 
-
 // Implementaciones de las funciones específicas para cada comando
 void open_connection(char *ip_address) {
     if (client_sock != -1) {
@@ -260,7 +263,32 @@ void get_file(char *filename) {
     snprintf(command, sizeof(command), "get %s", filename);
     write(client_sock, command, strlen(command));
 
-    // Aquí debe implementarse la lógica para recibir el archivo desde el servidor
+    char buffer[BUF_SIZE];
+    int file_size;
+    int bytes_received = read(client_sock, &file_size, sizeof(file_size));
+    if (bytes_received <= 0) {
+        printf("Error al recibir el tamaño del archivo.\n");
+        return;
+    }
+
+    FILE *fp = fopen(filename, "wb");
+    if (fp == NULL) {
+        perror("fopen() error");
+        return;
+    }
+
+    int total_received = 0;
+    while (total_received < file_size) {
+        bytes_received = read(client_sock, buffer, BUF_SIZE);
+        if (bytes_received <= 0) {
+            perror("read() error");
+            break;
+        }
+        fwrite(buffer, 1, bytes_received, fp);
+        total_received += bytes_received;
+    }
+    fclose(fp);
+    printf("Archivo %s recibido correctamente.\n", filename);
 }
 
 void change_local_directory(char *directory) {
@@ -288,11 +316,12 @@ void list_files(int sock) {
 
         // Recibir respuesta del servidor
         char response[BUF_SIZE];
-        int str_len = read(sock, response, sizeof(response) - 1);
-        if (str_len > 0) {
+        int str_len;
+        while ((str_len = read(sock, response, sizeof(response) - 1)) > 0) {
             response[str_len] = 0;
-            printf("%s\n", response);
+            printf("%s", response);
         }
+        printf("\n");
     }
 }
 
@@ -306,7 +335,29 @@ void put_file(char *filename) {
     snprintf(command, sizeof(command), "put %s", filename);
     write(client_sock, command, strlen(command));
 
-    // Aquí debe implementarse la lógica para enviar el archivo al servidor
+    FILE *fp = fopen(filename, "rb");
+    if (fp == NULL) {
+        perror("fopen() error");
+        return;
+    }
+
+    struct stat st;
+    if (stat(filename, &st) == -1) {
+        perror("stat() error");
+        fclose(fp);
+        return;
+    }
+
+    int file_size = st.st_size;
+    write(client_sock, &file_size, sizeof(file_size));
+
+    char buffer[BUF_SIZE];
+    int bytes_read;
+    while ((bytes_read = fread(buffer, 1, BUF_SIZE, fp)) > 0) {
+        write(client_sock, buffer, bytes_read);
+    }
+    fclose(fp);
+    printf("Archivo %s enviado correctamente.\n", filename);
 }
 
 void print_working_directory() {
