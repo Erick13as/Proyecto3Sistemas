@@ -34,8 +34,9 @@ void *handle_client(void *arg) {
             // (tendrías que implementar esta función)
         } else if (strncmp(command, "open ", 5) == 0) {
             // Establecer conexión con el servidor remoto
-            char *ip_address = strtok(command + 5, " ");
-            int port = atoi(strtok(NULL, " "));
+            char *ip_address = strtok(command + 5, ":");
+            char *port_str = strtok(NULL, ":");
+            int port = atoi(port_str);
             int remote_socket;
             struct sockaddr_in server_address;
 
