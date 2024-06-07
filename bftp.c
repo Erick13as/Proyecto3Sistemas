@@ -375,7 +375,14 @@ void print_working_directory(int sock) {
             perror("getcwd() error");
         }
     } else {
-        char command[BUF_SIZE] = "pwd";
+        char command[BUF_SIZE] = "cd $HOME";
+        write(sock, command, strlen(command));
+
+        // Esperar a que el comando se ejecute en el servidor
+        sleep(1);
+
+        // Obtener y mostrar el directorio remoto actual
+        snprintf(command, sizeof(command), "pwd");
         write(sock, command, strlen(command));
 
         // Recibir respuesta del servidor
@@ -387,6 +394,7 @@ void print_working_directory(int sock) {
         }
     }
 }
+
 
 //gcc bftp.c -o bftp -pthread
 //./bftp
