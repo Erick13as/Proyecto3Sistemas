@@ -20,6 +20,7 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 void *handle_connection(void *ptr);
 void *handle_commands(void *ptr);
 void execute_remote_command(const char *command, char *response, size_t size);
+void list_local_files(char *response, size_t size);
 
 int main() {
     int server_socket;
@@ -121,6 +122,23 @@ void execute_remote_command(const char *command, char *response, size_t size) {
     pclose(fp);
 }
 
+void list_local_files(char *response, size_t size) {
+    DIR *dir;
+    struct dirent *ent;
+
+    dir = opendir(".");
+    if (dir == NULL) {
+        snprintf(response, size, "Failed to list local directory\n");
+        return;
+    }
+
+    while ((ent = readdir(dir)) != NULL) {
+        strncat(response, ent->d_name, size - strlen(response) - 1);
+        strncat(response, "\n", size - strlen(response) - 1);
+    }
+    closedir(dir);
+}
+
 void *handle_commands(void *ptr) {
     char command[BUFFER_SIZE];
 
@@ -199,6 +217,17 @@ void *handle_commands(void *ptr) {
             } else {
                 perror("Failed to change local directory");
             }
+        } else if (strcmp(command, "lpwd") == 0) {
+            char cwd[BUFFER_SIZE];
+            if (getcwd(cwd, sizeof(cwd)) != NULL) {
+                printf("Local directory: %s\n", cwd);
+            } else {
+                perror("getcwd() error");
+            }
+        } else if (strcmp(command, "lls") == 0) {
+            char response[BUFFER_SIZE] = {0};
+            list_local_files(response, sizeof(response));
+            printf("%s", response);
         } else if (client_socket != -1) {
             send(client_socket, command, strlen(command), 0);
             char response[BUFFER_SIZE] = {0};
