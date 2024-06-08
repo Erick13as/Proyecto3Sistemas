@@ -25,7 +25,7 @@ void *handle_connection(void *ptr);
 void *handle_commands(void *ptr);
 void execute_remote_command(const char *command, char *response, size_t size, connection_t *connection);
 void list_local_files(char *response, size_t size);
-void handle_file_transfer(int client_socket, const char *command);
+void handle_file_transfer(int client_socket, const char *command, connection_t *connection);
 
 int main() {
     int server_socket;
@@ -89,7 +89,7 @@ void *handle_connection(void *ptr) {
         buffer[read_size] = '\0';
 
         if (strncmp(buffer, "get ", 4) == 0 || strncmp(buffer, "put ", 4) == 0) {
-            handle_file_transfer(connection->sock, buffer);
+            handle_file_transfer(connection->sock, buffer, connection);
         } else {
             char response[BUFFER_SIZE] = {0};
             execute_remote_command(buffer, response, sizeof(response), connection);
@@ -172,10 +172,23 @@ void list_local_files(char *response, size_t size) {
     closedir(dir);
 }
 
-void handle_file_transfer(int client_socket, const char *command) {
+void handle_file_transfer(int client_socket, const char *command, connection_t *connection) {
     char buffer[BUFFER_SIZE];
     int file;
     ssize_t bytes;
+
+    // Save the current directory to restore it after the command
+    char temp_directory[BUFFER_SIZE];
+    if (getcwd(temp_directory, sizeof(temp_directory)) == NULL) {
+        perror("Error getting current directory");
+        return;
+    }
+
+    // Change to the connection-specific directory
+    if (chdir(connection->current_directory) != 0) {
+        perror("Failed to change to directory");
+        return;
+    }
 
     if (strncmp(command, "get ", 4) == 0) {
         const char *filename = command + 4;
@@ -225,6 +238,9 @@ void handle_file_transfer(int client_socket, const char *command) {
 
         close(file);
     }
+
+    // Restore the previous directory
+    chdir(temp_directory);
 }
 
 void *handle_commands(void *ptr) {
