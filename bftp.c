@@ -4,398 +4,377 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <dirent.h>
+#include <errno.h>
 
 #define PORT 8889
-#define BUF_SIZE 1024
+#define BUFFER_SIZE 1024
 
-int client_sock = -1; // Socket para la conexión del cliente
-pthread_mutex_t lock;
+typedef struct {
+    int sock;
+    struct sockaddr_in address;
+    char current_directory[BUFFER_SIZE];
+} connection_t;
 
-void *handle_client(void *arg);
-void execute_command(char *command, int sock);
-void *get_user_input(void *arg);
-void connect_to_server(char *ip_address);
+int client_socket = -1;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Declaraciones de funciones específicas para cada comando
-void open_connection(char *ip_address);
-void close_connection();
-void quit_program();
-void change_directory(char *directory, int sock);
-void get_file(char *filename);
-void change_local_directory(char *directory);
-void list_files(int sock);
-void put_file(char *filename);
-void print_working_directory(int sock);
+void *handle_connection(void *ptr);
+void *handle_commands(void *ptr);
+void execute_remote_command(const char *command, char *response, size_t size, connection_t *connection);
+void list_local_files(char *response, size_t size);
+void handle_file_transfer(int client_socket, const char *command);
 
-int main(int argc, char *argv[]) {
-    int server_sock;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_addr_size;
-    pthread_t t_id;
+int main() {
+    int server_socket;
+    struct sockaddr_in server_address;
+    pthread_t thread;
 
-    pthread_mutex_init(&lock, NULL);
-
-    // Create server socket
-    server_sock = socket(PF_INET, SOCK_STREAM, 0);
-    if (server_sock == -1) {
-        perror("socket() error");
-        exit(1);
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0) {
+        perror("Could not create socket");
+        exit(EXIT_FAILURE);
     }
 
-    // Configure server address
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(PORT);
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = INADDR_ANY;
+    server_address.sin_port = htons(PORT);
 
-    // Bind server socket
-    if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
-        perror("bind() error");
-        close(server_sock);
-        exit(1);
+    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+        perror("Bind failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
     }
 
-    // Listen for connections
-    if (listen(server_sock, 5) == -1) {
-        perror("listen() error");
-        close(server_sock);
-        exit(1);
+    if (listen(server_socket, 5) < 0) {
+        perror("Listen failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
     }
 
-    // Thread to handle user input
-    pthread_create(&t_id, NULL, get_user_input, NULL);
-    pthread_detach(t_id);
+    pthread_create(&thread, NULL, handle_commands, NULL);
 
-    // Accept client connections
     while (1) {
-        client_addr_size = sizeof(client_addr);
-        int client_sock_temp = accept(server_sock, (struct sockaddr*)&client_addr, &client_addr_size);
-        if (client_sock_temp == -1) {
-            perror("accept() error");
-            continue;
-        }
+        connection_t *connection = malloc(sizeof(connection_t));
+        socklen_t address_len = sizeof(connection->address);
 
-        int *client_sock_ptr = malloc(sizeof(int));
-        *client_sock_ptr = client_sock_temp;
-        pthread_create(&t_id, NULL, handle_client, (void*)client_sock_ptr);
-        pthread_detach(t_id);
+        connection->sock = accept(server_socket, (struct sockaddr *)&connection->address, &address_len);
+        if (connection->sock <= 0) {
+            free(connection);
+        } else {
+            // Initialize the current directory to the server's current directory
+            getcwd(connection->current_directory, sizeof(connection->current_directory));
+
+            pthread_t conn_thread;
+            pthread_create(&conn_thread, NULL, handle_connection, (void *)connection);
+            pthread_detach(conn_thread);
+        }
     }
 
-    close(server_sock);
-    pthread_mutex_destroy(&lock);
+    close(server_socket);
     return 0;
 }
 
-void *handle_client(void *arg) {
-    int client_sock = *((int*)arg);
-    free(arg);
-    char command[BUF_SIZE];
+void *handle_connection(void *ptr) {
+    connection_t *connection = (connection_t *)ptr;
+    char buffer[BUFFER_SIZE];
 
     while (1) {
-        int str_len = read(client_sock, command, sizeof(command) - 1);
-        if (str_len <= 0) {
-            close(client_sock);
-            return NULL;
+        int read_size = recv(connection->sock, buffer, sizeof(buffer), 0);
+        if (read_size <= 0) {
+            break;
         }
+        buffer[read_size] = '\0';
 
-        command[str_len] = 0;
-        execute_command(command, client_sock);
+        if (strncmp(buffer, "get ", 4) == 0 || strncmp(buffer, "put ", 4) == 0) {
+            handle_file_transfer(connection->sock, buffer);
+        } else {
+            char response[BUFFER_SIZE] = {0};
+            execute_remote_command(buffer, response, sizeof(response), connection);
+            send(connection->sock, response, strlen(response), 0);
+        }
     }
-}
 
-void *get_user_input(void *arg) {
-    char command[BUF_SIZE];
-
-    while (1) {
-        printf("bftp> ");
-        fgets(command, BUF_SIZE, stdin);
-        execute_command(command, client_sock);
-    }
+    close(connection->sock);
+    free(connection);
     return NULL;
 }
 
-void execute_command(char *command, int sock) {
-    // Remove trailing newline character
-    command[strcspn(command, "\n")] = 0;
+void execute_remote_command(const char *command, char *response, size_t size, connection_t *connection) {
+    FILE *fp;
+    char path[BUFFER_SIZE];
+    char cmd[BUFFER_SIZE];
 
-    // Split command into parts
-    char *token = strtok(command, " ");
-    if (token == NULL) {
-        return;
-    }
-
-    if (strcmp(token, "open") == 0) {
-        char *ip_address = strtok(NULL, " ");
-        if (ip_address) {
-            open_connection(ip_address);
-        }
-    } else if (strcmp(token, "close") == 0) {
-        close_connection();
-    } else if (strcmp(token, "quit") == 0) {
-        quit_program();
-    } else if (strcmp(token, "cd") == 0) {
-        char *directory = strtok(NULL, " ");
-        if (directory) {
-            change_directory(directory, sock);
-        }
-    } else if (strcmp(token, "get") == 0) {
-        char *filename = strtok(NULL, " ");
-        if (filename) {
-            get_file(filename);
-        }
-    } else if (strcmp(token, "lcd") == 0) {
-        char *directory = strtok(NULL, " ");
-        if (directory) {
-            change_local_directory(directory);
-        }
-    } else if (strcmp(token, "ls") == 0) {
-        list_files(sock);
-    } else if (strcmp(token, "put") == 0) {
-        char *filename = strtok(NULL, " ");
-        if (filename) {
-            put_file(filename);
-        }
-    } else if (strcmp(token, "pwd") == 0) {
-        print_working_directory(sock);
-    } else {
-        printf("Unknown command: %s\n", token);
-    }
-}
-
-// Implementaciones de las funciones específicas para cada comando
-void open_connection(char *ip_address) {
-    if (client_sock != -1) {
-        printf("Ya hay una conexión abierta. Primero cierre la conexión actual.\n");
-        return;
-    }
-
-    connect_to_server(ip_address);
-}
-
-void connect_to_server(char *ip_address) {
-    struct sockaddr_in server_addr;
-
-    client_sock = socket(PF_INET, SOCK_STREAM, 0);
-    if (client_sock == -1) {
-        perror("socket() error");
-        return;
-    }
-
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = inet_addr(ip_address);
-    server_addr.sin_port = htons(PORT);
-
-    if (connect(client_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
-        perror("connect() error");
-        close(client_sock);
-        client_sock = -1;
-        return;
-    }
-
-    printf("Conectado a %s\n", ip_address);
-
-    // Cambiar al directorio home en el servidor remoto
-    char command[BUF_SIZE] = "cd $HOME";
-    write(client_sock, command, strlen(command));
-
-    // Esperar a que el comando se ejecute en el servidor
-    sleep(1);
-
-    // Obtener y mostrar el directorio remoto actual
-    snprintf(command, sizeof(command), "pwd");
-    write(client_sock, command, strlen(command));
-
-    // Recibir respuesta del servidor
-    char response[BUF_SIZE];
-    int str_len = read(client_sock, response, sizeof(response) - 1);
-    if (str_len > 0) {
-        response[str_len] = 0;
-        printf("Directorio remoto actual: %s\n", response);
-    }
-}
-
-void close_connection() {
-    if (client_sock == -1) {
-        printf("No hay ninguna conexión abierta.\n");
-        return;
-    }
-
-    close(client_sock);
-    client_sock = -1;
-    printf("Conexión cerrada.\n");
-}
-
-void quit_program() {
-    if (client_sock != -1) {
-        close(client_sock);
-    }
-    printf("Terminando el programa.\n");
-    exit(0);
-}
-
-void change_directory(char *directory, int sock) {
-    if (sock == -1) {
-        if (chdir(directory) == 0) {
-            printf("Directorio cambiado a %s\n", directory);
+    if (strncmp(command, "cd ", 3) == 0) {
+        char *dir = command + 3;
+        if (chdir(dir) == 0) {
+            getcwd(connection->current_directory, sizeof(connection->current_directory));
+            snprintf(response, size, "Changed directory to %s\n", connection->current_directory);
         } else {
-            perror("chdir() error");
+            snprintf(response, size, "Failed to change directory to %s\n", dir);
         }
+        return;
+    } else if (strcmp(command, "ls") == 0) {
+        snprintf(cmd, sizeof(cmd), "ls %s", connection->current_directory);
     } else {
-        char command[BUF_SIZE];
-        snprintf(command, sizeof(command), "cd %s", directory);
-        write(sock, command, strlen(command));
-
-        // Recibir respuesta del servidor
-        char response[BUF_SIZE];
-        int str_len = read(sock, response, sizeof(response) - 1);
-        if (str_len > 0) {
-            response[str_len] = 0;
-            printf("%s\n", response);
-        }
-    }
-}
-
-void get_file(char *filename) {
-    if (client_sock == -1) {
-        printf("No hay ninguna conexión abierta.\n");
-        return;
+        snprintf(cmd, sizeof(cmd), "cd %s && %s", connection->current_directory, command);
     }
 
-    char command[BUF_SIZE];
-    snprintf(command, sizeof(command), "get %s", filename);
-    write(client_sock, command, strlen(command));
-
-    char buffer[BUF_SIZE];
-    int file_size;
-    int bytes_received = read(client_sock, &file_size, sizeof(file_size));
-    if (bytes_received <= 0) {
-        printf("Error al recibir el tamaño del archivo.\n");
-        return;
-    }
-
-    FILE *fp = fopen(filename, "wb");
+    fp = popen(cmd, "r");
     if (fp == NULL) {
-        perror("fopen() error");
+        snprintf(response, size, "Failed to execute command\n");
         return;
     }
 
-    int total_received = 0;
-    while (total_received < file_size) {
-        bytes_received = read(client_sock, buffer, BUF_SIZE);
-        if (bytes_received <= 0) {
-            perror("read() error");
-            break;
+    while (fgets(path, sizeof(path) - 1, fp) != NULL) {
+        strncat(response, path, size - strlen(response) - 1);
+    }
+    pclose(fp);
+}
+
+void list_local_files(char *response, size_t size) {
+    DIR *dir;
+    struct dirent *ent;
+
+    dir = opendir(".");
+    if (dir == NULL) {
+        snprintf(response, size, "Failed to list local directory\n");
+        return;
+    }
+
+    while ((ent = readdir(dir)) != NULL) {
+        strncat(response, ent->d_name, size - strlen(response) - 1);
+        strncat(response, "\n", size - strlen(response) - 1);
+    }
+    closedir(dir);
+}
+
+void handle_file_transfer(int client_socket, const char *command) {
+    char buffer[BUFFER_SIZE];
+    int file;
+    ssize_t bytes;
+
+    if (strncmp(command, "get ", 4) == 0) {
+        const char *filename = command + 4;
+        file = open(filename, O_RDONLY);
+        if (file < 0) {
+            perror("Failed to open file");
+            return;
         }
-        fwrite(buffer, 1, bytes_received, fp);
-        total_received += bytes_received;
-    }
-    fclose(fp);
-    printf("Archivo %s recibido correctamente.\n", filename);
-}
 
-void change_local_directory(char *directory) {
-    if (chdir(directory) == -1) {
-        perror("chdir() error");
-    }
-}
+        struct stat file_stat;
+        if (fstat(file, &file_stat) < 0) {
+            perror("Failed to get file stat");
+            close(file);
+            return;
+        }
 
-void list_files(int sock) {
-    if (sock == -1) {
-        DIR *d;
-        struct dirent *dir;
-        d = opendir(".");
-        if (d) {
-            while ((dir = readdir(d)) != NULL) {
-                printf("%s\n", dir->d_name);
+        // Enviar el tamaño del archivo
+        off_t file_size = file_stat.st_size;
+        send(client_socket, &file_size, sizeof(file_size), 0);
+
+        while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
+            send(client_socket, buffer, bytes, 0);
+        }
+
+        close(file);
+    } else if (strncmp(command, "put ", 4) == 0) {
+        const char *filename = command + 4;
+        file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (file < 0) {
+            perror("Failed to open file");
+            return;
+        }
+
+        // Recibir el tamaño del archivo
+        off_t file_size;
+        recv(client_socket, &file_size, sizeof(file_size), 0);
+
+        off_t bytes_received = 0;
+        while (bytes_received < file_size) {
+            bytes = recv(client_socket, buffer, sizeof(buffer), 0);
+            if (bytes <= 0) {
+                break;
             }
-            closedir(d);
-        } else {
-            perror("opendir() error");
+            write(file, buffer, bytes);
+            bytes_received += bytes;
         }
-    } else {
-        char command[BUF_SIZE] = "ls";
-        write(sock, command, strlen(command));
 
-        // Recibir respuesta del servidor
-        char response[BUF_SIZE];
-        int str_len;
-        while ((str_len = read(sock, response, sizeof(response) - 1)) > 0) {
-            response[str_len] = 0;
+        close(file);
+    }
+}
+
+void *handle_commands(void *ptr) {
+    char command[BUFFER_SIZE];
+
+    while (1) {
+        printf("> ");
+        fflush(stdout);
+        if (fgets(command, sizeof(command), stdin) == NULL) {
+            continue;
+        }
+
+        command[strcspn(command, "\n")] = '\0';
+
+        if (strncmp(command, "open", 4) == 0) {
+            char *ip = strtok(command + 5, " ");
+            if (ip) {
+                struct sockaddr_in server_addr;
+
+                pthread_mutex_lock(&mutex);
+                if (client_socket != -1) {
+                    printf("Already connected to a remote server. Please close the connection first.\n");
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                client_socket = socket(AF_INET, SOCK_STREAM, 0);
+                if (client_socket < 0) {
+                    perror("Socket creation failed");
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                server_addr.sin_family = AF_INET;
+                server_addr.sin_port = htons(PORT);
+
+                if (inet_pton(AF_INET, ip, &server_addr.sin_addr) <= 0) {
+                    perror("Invalid address");
+                    close(client_socket);
+                    client_socket = -1;
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                if (connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+                    perror("Connection failed");
+                    close(client_socket);
+                    client_socket = -1;
+                    pthread_mutex_unlock(&mutex);
+                    continue;
+                }
+
+                printf("Connected to %s\n", ip);
+                pthread_mutex_unlock(&mutex);
+            }
+        } else if (strcmp(command, "close") == 0) {
+            pthread_mutex_lock(&mutex);
+            if (client_socket != -1) {
+                close(client_socket);
+                client_socket = -1;
+                printf("Connection closed\n");
+            } else {
+                printf("No active connection to close\n");
+            }
+            pthread_mutex_unlock(&mutex);
+        } else if (strcmp(command, "quit") == 0) {
+            pthread_mutex_lock(&mutex);
+            if (client_socket != -1) {
+                close(client_socket);
+            }
+            printf("Exiting...\n");
+            pthread_mutex_unlock(&mutex);
+            exit(EXIT_SUCCESS);
+        } else if (strncmp(command, "lcd ", 4) == 0) {
+            char *dir = command + 4;
+            if (chdir(dir) == 0) {
+                printf("Changed local directory to %s\n", dir);
+            } else {
+                perror("Failed to change local directory");
+            }
+        } else if (strcmp(command, "lpwd") == 0) {
+            char cwd[BUFFER_SIZE];
+            if (getcwd(cwd, sizeof(cwd)) != NULL) {
+                printf("Local directory: %s\n", cwd);
+            } else {
+                perror("getcwd() error");
+            }
+        } else if (strcmp(command, "lls") == 0) {
+            char response[BUFFER_SIZE] = {0};
+            list_local_files(response, sizeof(response));
             printf("%s", response);
-        }
-        printf("\n");
-    }
-}
+        } else if (strncmp(command, "get ", 4) == 0) {
+            if (client_socket == -1) {
+                printf("No active connection to send command to\n");
+                continue;
+            }
 
-void put_file(char *filename) {
-    if (client_sock == -1) {
-        printf("No hay ninguna conexión abierta.\n");
-        return;
-    }
+            send(client_socket, command, strlen(command), 0);
 
-    char command[BUF_SIZE];
-    snprintf(command, sizeof(command), "put %s", filename);
-    write(client_sock, command, strlen(command));
+            char filename[BUFFER_SIZE];
+            strcpy(filename, command + 4);
 
-    FILE *fp = fopen(filename, "rb");
-    if (fp == NULL) {
-        perror("fopen() error");
-        return;
-    }
+            // Recibir el tamaño del archivo
+            off_t file_size;
+            recv(client_socket, &file_size, sizeof(file_size), 0);
 
-    struct stat st;
-    if (stat(filename, &st) == -1) {
-        perror("stat() error");
-        fclose(fp);
-        return;
-    }
+            int file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (file < 0) {
+                perror("Failed to open file");
+                continue;
+            }
 
-    int file_size = st.st_size;
-    write(client_sock, &file_size, sizeof(file_size));
+            char buffer[BUFFER_SIZE];
+            ssize_t bytes;
+            off_t bytes_received = 0;
+            while (bytes_received < file_size) {
+                bytes = recv(client_socket, buffer, sizeof(buffer), 0);
+                if (bytes <= 0) {
+                    break;
+                }
+                write(file, buffer, bytes);
+                bytes_received += bytes;
+            }
 
-    char buffer[BUF_SIZE];
-    int bytes_read;
-    while ((bytes_read = fread(buffer, 1, BUF_SIZE, fp)) > 0) {
-        write(client_sock, buffer, bytes_read);
-    }
-    fclose(fp);
-    printf("Archivo %s enviado correctamente.\n", filename);
-}
+            close(file);
+        } else if (strncmp(command, "put ", 4) == 0) {
+            if (client_socket == -1) {
+                printf("No active connection to send command to\n");
+                continue;
+            }
 
-void print_working_directory(int sock) {
-    if (sock == -1) {
-        char cwd[BUF_SIZE];
-        if (getcwd(cwd, sizeof(cwd)) != NULL) {
-            printf("%s\n", cwd);
+            char filename[BUFFER_SIZE];
+            strcpy(filename, command + 4);
+            int file = open(filename, O_RDONLY);
+            if (file < 0) {
+                perror("Failed to open file");
+                continue;
+            }
+
+            struct stat file_stat;
+            if (fstat(file, &file_stat) < 0) {
+                perror("Failed to get file stat");
+                close(file);
+                continue;
+            }
+
+            off_t file_size = file_stat.st_size;
+            send(client_socket, command, strlen(command), 0);
+
+            // Enviar el tamaño del archivo
+            send(client_socket, &file_size, sizeof(file_size), 0);
+
+            char buffer[BUFFER_SIZE];
+            ssize_t bytes;
+            while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
+                send(client_socket, buffer, bytes, 0);
+            }
+
+            close(file);
+        } else if (client_socket != -1) {
+            send(client_socket, command, strlen(command), 0);
+            char response[BUFFER_SIZE] = {0};
+            int read_size = recv(client_socket, response, sizeof(response) - 1, 0);
+            if (read_size > 0) {
+                response[read_size] = '\0';
+                printf("%s", response);
+            }
         } else {
-            perror("getcwd() error");
-        }
-    } else {
-        char command[BUF_SIZE] = "cd $HOME";
-        write(sock, command, strlen(command));
-
-        // Esperar a que el comando se ejecute en el servidor
-        sleep(1);
-
-        // Obtener y mostrar el directorio remoto actual
-        snprintf(command, sizeof(command), "pwd");
-        write(sock, command, strlen(command));
-
-        // Recibir respuesta del servidor
-        char response[BUF_SIZE];
-        int str_len = read(sock, response, sizeof(response) - 1);
-        if (str_len > 0) {
-            response[str_len] = 0;
-            printf("Directorio remoto actual: %s\n", response);
+            printf("No active connection to send command to\n");
         }
     }
+
+    return NULL;
 }
-
-
-//gcc bftp.c -o bftp -pthread
-//./bftp
-//open 192.168.0.15
