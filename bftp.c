@@ -106,6 +106,19 @@ void execute_remote_command(const char *command, char *response, size_t size, co
     FILE *fp;
     char path[BUFFER_SIZE];
     char cmd[BUFFER_SIZE];
+    char temp_directory[BUFFER_SIZE];
+
+    // Save the current directory to restore it after the command
+    if (getcwd(temp_directory, sizeof(temp_directory)) == NULL) {
+        snprintf(response, size, "Error getting current directory\n");
+        return;
+    }
+
+    // Change to the connection-specific directory
+    if (chdir(connection->current_directory) != 0) {
+        snprintf(response, size, "Failed to change to directory %s\n", connection->current_directory);
+        return;
+    }
 
     if (strncmp(command, "cd ", 3) == 0) {
         char *dir = command + 3;
@@ -115,23 +128,31 @@ void execute_remote_command(const char *command, char *response, size_t size, co
         } else {
             snprintf(response, size, "Failed to change directory to %s\n", dir);
         }
-        return;
     } else if (strcmp(command, "ls") == 0) {
-        snprintf(cmd, sizeof(cmd), "ls %s", connection->current_directory);
+        snprintf(cmd, sizeof(cmd), "ls");
+        fp = popen(cmd, "r");
+        if (fp == NULL) {
+            snprintf(response, size, "Failed to execute command\n");
+            return;
+        }
+        while (fgets(path, sizeof(path) - 1, fp) != NULL) {
+            strncat(response, path, size - strlen(response) - 1);
+        }
+        pclose(fp);
     } else {
-        snprintf(cmd, sizeof(cmd), "cd %s && %s", connection->current_directory, command);
+        fp = popen(command, "r");
+        if (fp == NULL) {
+            snprintf(response, size, "Failed to execute command\n");
+            return;
+        }
+        while (fgets(path, sizeof(path) - 1, fp) != NULL) {
+            strncat(response, path, size - strlen(response) - 1);
+        }
+        pclose(fp);
     }
 
-    fp = popen(cmd, "r");
-    if (fp == NULL) {
-        snprintf(response, size, "Failed to execute command\n");
-        return;
-    }
-
-    while (fgets(path, sizeof(path) - 1, fp) != NULL) {
-        strncat(response, path, size - strlen(response) - 1);
-    }
-    pclose(fp);
+    // Restore the previous directory
+    chdir(temp_directory);
 }
 
 void list_local_files(char *response, size_t size) {
@@ -295,9 +316,18 @@ void *handle_commands(void *ptr) {
             char response[BUFFER_SIZE] = {0};
             list_local_files(response, sizeof(response));
             printf("%s", response);
+        } else if (strncmp(command, "lcd ", 4) == 0) {
+            char *dir = command + 4;
+            if (chdir(dir) == 0) {
+                printf("Changed local directory to %s\n", dir);
+            } else {
+                perror("Failed to change local directory");
+            }
         } else if (strncmp(command, "get ", 4) == 0) {
+            pthread_mutex_lock(&mutex);
             if (client_socket == -1) {
                 printf("No active connection to send command to\n");
+                pthread_mutex_unlock(&mutex);
                 continue;
             }
 
@@ -306,13 +336,13 @@ void *handle_commands(void *ptr) {
             char filename[BUFFER_SIZE];
             strcpy(filename, command + 4);
 
-            // Recibir el tamaño del archivo
             off_t file_size;
             recv(client_socket, &file_size, sizeof(file_size), 0);
 
             int file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (file < 0) {
                 perror("Failed to open file");
+                pthread_mutex_unlock(&mutex);
                 continue;
             }
 
@@ -329,9 +359,12 @@ void *handle_commands(void *ptr) {
             }
 
             close(file);
+            pthread_mutex_unlock(&mutex);
         } else if (strncmp(command, "put ", 4) == 0) {
+            pthread_mutex_lock(&mutex);
             if (client_socket == -1) {
                 printf("No active connection to send command to\n");
+                pthread_mutex_unlock(&mutex);
                 continue;
             }
 
@@ -340,6 +373,7 @@ void *handle_commands(void *ptr) {
             int file = open(filename, O_RDONLY);
             if (file < 0) {
                 perror("Failed to open file");
+                pthread_mutex_unlock(&mutex);
                 continue;
             }
 
@@ -347,13 +381,13 @@ void *handle_commands(void *ptr) {
             if (fstat(file, &file_stat) < 0) {
                 perror("Failed to get file stat");
                 close(file);
+                pthread_mutex_unlock(&mutex);
                 continue;
             }
 
             off_t file_size = file_stat.st_size;
             send(client_socket, command, strlen(command), 0);
 
-            // Enviar el tamaño del archivo
             send(client_socket, &file_size, sizeof(file_size), 0);
 
             char buffer[BUFFER_SIZE];
@@ -363,16 +397,21 @@ void *handle_commands(void *ptr) {
             }
 
             close(file);
-        } else if (client_socket != -1) {
-            send(client_socket, command, strlen(command), 0);
-            char response[BUFFER_SIZE] = {0};
-            int read_size = recv(client_socket, response, sizeof(response) - 1, 0);
-            if (read_size > 0) {
-                response[read_size] = '\0';
-                printf("%s", response);
-            }
+            pthread_mutex_unlock(&mutex);
         } else {
-            printf("No active connection to send command to\n");
+            pthread_mutex_lock(&mutex);
+            if (client_socket != -1) {
+                send(client_socket, command, strlen(command), 0);
+                char response[BUFFER_SIZE] = {0};
+                int read_size = recv(client_socket, response, sizeof(response) - 1, 0);
+                if (read_size > 0) {
+                    response[read_size] = '\0';
+                    printf("%s", response);
+                }
+            } else {
+                printf("No active connection to send command to\n");
+            }
+            pthread_mutex_unlock(&mutex);
         }
     }
 
