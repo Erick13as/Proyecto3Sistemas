@@ -330,13 +330,6 @@ void *handle_commands(void *ptr) {
             char response[BUFFER_SIZE] = {0};
             list_local_files(response, sizeof(response));
             printf("%s", response);
-        } else if (strncmp(command, "lcd ", 4) == 0) {
-            char *dir = command + 4;
-            if (chdir(dir) == 0) {
-                printf("Changed local directory to %s\n", dir);
-            } else {
-                perror("Failed to change local directory");
-            }
         } else if (strncmp(command, "get ", 4) == 0) {
             pthread_mutex_lock(&mutex);
             if (client_socket == -1) {
