@@ -26,7 +26,6 @@ void *handle_commands(void *ptr);
 void execute_remote_command(const char *command, char *response, size_t size, connection_t *connection);
 void list_local_files(char *response, size_t size);
 void handle_file_transfer(int client_socket, const char *command, connection_t *connection);
-void send_error_message(int socket, const char *message);
 
 int main() {
     int server_socket;
@@ -65,6 +64,7 @@ int main() {
         if (connection->sock <= 0) {
             free(connection);
         } else {
+            // Initialize the current directory to the server's current directory
             getcwd(connection->current_directory, sizeof(connection->current_directory));
 
             pthread_t conn_thread;
@@ -108,13 +108,15 @@ void execute_remote_command(const char *command, char *response, size_t size, co
     char cmd[BUFFER_SIZE];
     char temp_directory[BUFFER_SIZE];
 
+    // Save the current directory to restore it after the command
     if (getcwd(temp_directory, sizeof(temp_directory)) == NULL) {
-        snprintf(response, size, "Error: %s\n", strerror(errno));
+        snprintf(response, size, "Error getting current directory\n");
         return;
     }
 
+    // Change to the connection-specific directory
     if (chdir(connection->current_directory) != 0) {
-        snprintf(response, size, "Error: %s\n", strerror(errno));
+        snprintf(response, size, "Failed to change to directory %s\n", connection->current_directory);
         return;
     }
 
@@ -124,13 +126,13 @@ void execute_remote_command(const char *command, char *response, size_t size, co
             getcwd(connection->current_directory, sizeof(connection->current_directory));
             snprintf(response, size, "Changed directory to %s\n", connection->current_directory);
         } else {
-            snprintf(response, size, "Error: %s\n", strerror(errno));
+            snprintf(response, size, "Failed to change directory to %s\n", dir);
         }
     } else if (strcmp(command, "ls") == 0) {
         snprintf(cmd, sizeof(cmd), "ls");
         fp = popen(cmd, "r");
         if (fp == NULL) {
-            snprintf(response, size, "Error: %s\n", strerror(errno));
+            snprintf(response, size, "Failed to execute command\n");
             return;
         }
         while (fgets(path, sizeof(path) - 1, fp) != NULL) {
@@ -140,7 +142,7 @@ void execute_remote_command(const char *command, char *response, size_t size, co
     } else {
         fp = popen(command, "r");
         if (fp == NULL) {
-            snprintf(response, size, "Error: %s\n", strerror(errno));
+            snprintf(response, size, "Failed to execute command\n");
             return;
         }
         while (fgets(path, sizeof(path) - 1, fp) != NULL) {
@@ -149,6 +151,7 @@ void execute_remote_command(const char *command, char *response, size_t size, co
         pclose(fp);
     }
 
+    // Restore the previous directory
     chdir(temp_directory);
 }
 
@@ -158,7 +161,7 @@ void list_local_files(char *response, size_t size) {
 
     dir = opendir(".");
     if (dir == NULL) {
-        snprintf(response, size, "Error: %s\n", strerror(errno));
+        snprintf(response, size, "Failed to list local directory\n");
         return;
     }
 
@@ -174,14 +177,16 @@ void handle_file_transfer(int client_socket, const char *command, connection_t *
     int file;
     ssize_t bytes;
 
+    // Save the current directory to restore it after the command
     char temp_directory[BUFFER_SIZE];
     if (getcwd(temp_directory, sizeof(temp_directory)) == NULL) {
-        send_error_message(client_socket, strerror(errno));
+        perror("Error getting current directory");
         return;
     }
 
+    // Change to the connection-specific directory
     if (chdir(connection->current_directory) != 0) {
-        send_error_message(client_socket, strerror(errno));
+        perror("Failed to change to directory");
         return;
     }
 
@@ -189,17 +194,18 @@ void handle_file_transfer(int client_socket, const char *command, connection_t *
         const char *filename = command + 4;
         file = open(filename, O_RDONLY);
         if (file < 0) {
-            send_error_message(client_socket, strerror(errno));
+            perror("Failed to open file");
             return;
         }
 
         struct stat file_stat;
         if (fstat(file, &file_stat) < 0) {
-            send_error_message(client_socket, strerror(errno));
+            perror("Failed to get file stat");
             close(file);
             return;
         }
 
+        // Enviar el tamaño del archivo
         off_t file_size = file_stat.st_size;
         send(client_socket, &file_size, sizeof(file_size), 0);
 
@@ -212,10 +218,11 @@ void handle_file_transfer(int client_socket, const char *command, connection_t *
         const char *filename = command + 4;
         file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (file < 0) {
-            send_error_message(client_socket, strerror(errno));
+            perror("Failed to open file");
             return;
         }
 
+        // Recibir el tamaño del archivo
         off_t file_size;
         recv(client_socket, &file_size, sizeof(file_size), 0);
 
@@ -232,13 +239,8 @@ void handle_file_transfer(int client_socket, const char *command, connection_t *
         close(file);
     }
 
+    // Restore the previous directory
     chdir(temp_directory);
-}
-
-void send_error_message(int socket, const char *message) {
-    char buffer[BUFFER_SIZE];
-    snprintf(buffer, sizeof(buffer), "Error: %s\n", message);
-    send(socket, buffer, strlen(buffer), 0);
 }
 
 void *handle_commands(void *ptr) {
@@ -344,11 +346,7 @@ void *handle_commands(void *ptr) {
             strcpy(filename, command + 4);
 
             off_t file_size;
-            if (recv(client_socket, &file_size, sizeof(file_size), 0) <= 0) {
-                perror("Failed to receive file size");
-                pthread_mutex_unlock(&mutex);
-                continue;
-            }
+            recv(client_socket, &file_size, sizeof(file_size), 0);
 
             int file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (file < 0) {
