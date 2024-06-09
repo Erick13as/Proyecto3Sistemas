@@ -35,7 +35,7 @@ int main() {
 
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0) {
-        perror("Could not create socket");
+        perror("No se pudo crear el socket");
         exit(EXIT_FAILURE);
     }
 
@@ -44,13 +44,13 @@ int main() {
     server_address.sin_port = htons(PORT);
 
     if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
-        perror("Bind failed");
+        perror("Error de enlace");
         close(server_socket);
         exit(EXIT_FAILURE);
     }
 
     if (listen(server_socket, 5) < 0) {
-        perror("Listen failed");
+        perror("Escucha fallida");
         close(server_socket);
         exit(EXIT_FAILURE);
     }
@@ -122,7 +122,7 @@ void execute_remote_command(const char *command, char *response, size_t size, co
         char *dir = command + 3;
         if (chdir(dir) == 0) {
             getcwd(connection->current_directory, sizeof(connection->current_directory));
-            snprintf(response, size, "Changed directory to %s\n", connection->current_directory);
+            snprintf(response, size, "Directorio cambiado a %s\n", connection->current_directory);
         } else {
             snprintf(response, size, "Error: %s\n", strerror(errno));
         }
@@ -260,14 +260,14 @@ void *handle_commands(void *ptr) {
 
                 pthread_mutex_lock(&mutex);
                 if (client_socket != -1) {
-                    printf("Already connected to a remote server. Please close the connection first.\n");
+                    printf("Ya conectado a un servidor remoto.\n");
                     pthread_mutex_unlock(&mutex);
                     continue;
                 }
 
                 client_socket = socket(AF_INET, SOCK_STREAM, 0);
                 if (client_socket < 0) {
-                    perror("Socket creation failed");
+                    perror("Creacion fallida del socket");
                     pthread_mutex_unlock(&mutex);
                     continue;
                 }
@@ -276,7 +276,7 @@ void *handle_commands(void *ptr) {
                 server_addr.sin_port = htons(PORT);
 
                 if (inet_pton(AF_INET, ip, &server_addr.sin_addr) <= 0) {
-                    perror("Invalid address");
+                    perror("Direccion invalida");
                     close(client_socket);
                     client_socket = -1;
                     pthread_mutex_unlock(&mutex);
@@ -284,14 +284,14 @@ void *handle_commands(void *ptr) {
                 }
 
                 if (connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-                    perror("Connection failed");
+                    perror("Conexion fallida");
                     close(client_socket);
                     client_socket = -1;
                     pthread_mutex_unlock(&mutex);
                     continue;
                 }
 
-                printf("Connected to %s\n", ip);
+                printf("Conectado a %s\n", ip);
                 pthread_mutex_unlock(&mutex);
             }
         } else if (strcmp(command, "close") == 0) {
@@ -299,9 +299,9 @@ void *handle_commands(void *ptr) {
             if (client_socket != -1) {
                 close(client_socket);
                 client_socket = -1;
-                printf("Connection closed\n");
+                printf("Conexion cerrada\n");
             } else {
-                printf("No active connection to close\n");
+                printf("No hay conexion activa que cerrar\n");
             }
             pthread_mutex_unlock(&mutex);
         } else if (strcmp(command, "quit") == 0) {
@@ -309,20 +309,20 @@ void *handle_commands(void *ptr) {
             if (client_socket != -1) {
                 close(client_socket);
             }
-            printf("Exiting...\n");
+            printf("Saliendo...\n");
             pthread_mutex_unlock(&mutex);
             exit(EXIT_SUCCESS);
         } else if (strncmp(command, "lcd ", 4) == 0) {
             char *dir = command + 4;
             if (chdir(dir) == 0) {
-                printf("Changed local directory to %s\n", dir);
+                printf("Se cambio el directorio local a %s\n", dir);
             } else {
-                perror("Failed to change local directory");
+                perror("No se pudo cambiar el directorio local");
             }
         } else if (strcmp(command, "lpwd") == 0) {
             char cwd[BUFFER_SIZE];
             if (getcwd(cwd, sizeof(cwd)) != NULL) {
-                printf("Local directory: %s\n", cwd);
+                printf("Directorio local: %s\n", cwd);
             } else {
                 perror("getcwd() error");
             }
@@ -333,7 +333,7 @@ void *handle_commands(void *ptr) {
         } else if (strncmp(command, "get ", 4) == 0) {
             pthread_mutex_lock(&mutex);
             if (client_socket == -1) {
-                printf("No active connection to send command to\n");
+                printf("No hay conexion activa para enviar el comando\n");
                 pthread_mutex_unlock(&mutex);
                 continue;
             }
@@ -345,14 +345,14 @@ void *handle_commands(void *ptr) {
 
             off_t file_size;
             if (recv(client_socket, &file_size, sizeof(file_size), 0) <= 0) {
-                perror("Failed to receive file size");
+                perror("No se pudo recibir el tamaño del archivo");
                 pthread_mutex_unlock(&mutex);
                 continue;
             }
 
             int file = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (file < 0) {
-                perror("Failed to open file");
+                perror("Fallo al abrir el archivo");
                 pthread_mutex_unlock(&mutex);
                 continue;
             }
@@ -374,7 +374,7 @@ void *handle_commands(void *ptr) {
         } else if (strncmp(command, "put ", 4) == 0) {
             pthread_mutex_lock(&mutex);
             if (client_socket == -1) {
-                printf("No active connection to send command to\n");
+                printf("No hay conexion activa para enviar el comando\n");
                 pthread_mutex_unlock(&mutex);
                 continue;
             }
@@ -383,14 +383,14 @@ void *handle_commands(void *ptr) {
             strcpy(filename, command + 4);
             int file = open(filename, O_RDONLY);
             if (file < 0) {
-                perror("Failed to open file");
+                perror("Fallo al abrir el archivo");
                 pthread_mutex_unlock(&mutex);
                 continue;
             }
 
             struct stat file_stat;
             if (fstat(file, &file_stat) < 0) {
-                perror("Failed to get file stat");
+                perror("No se pudo obtener la estadistica del archivo");
                 close(file);
                 pthread_mutex_unlock(&mutex);
                 continue;
@@ -420,7 +420,7 @@ void *handle_commands(void *ptr) {
                     printf("%s", response);
                 }
             } else {
-                printf("No active connection to send command to\n");
+                printf("No hay conexion activa para enviar el comando\n");
             }
             pthread_mutex_unlock(&mutex);
         }
@@ -428,3 +428,6 @@ void *handle_commands(void *ptr) {
 
     return NULL;
 }
+
+//gcc bftp.c -o bftp -pthread
+//./bftp
