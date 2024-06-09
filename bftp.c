@@ -217,7 +217,11 @@ void handle_file_transfer(int client_socket, const char *command, connection_t *
         }
 
         off_t file_size;
-        recv(client_socket, &file_size, sizeof(file_size), 0);
+        if (recv(client_socket, &file_size, sizeof(file_size), 0) <= 0) {
+            send_error_message(client_socket, "Failed to receive file size");
+            close(file);
+            return;
+        }
 
         off_t bytes_received = 0;
         while (bytes_received < file_size) {
@@ -225,7 +229,10 @@ void handle_file_transfer(int client_socket, const char *command, connection_t *
             if (bytes <= 0) {
                 break;
             }
-            write(file, buffer, bytes);
+            if (write(file, buffer, bytes) != bytes) {
+                send_error_message(client_socket, "Failed to write to file");
+                break;
+            }
             bytes_received += bytes;
         }
 
@@ -404,7 +411,10 @@ void *handle_commands(void *ptr) {
             char buffer[BUFFER_SIZE];
             ssize_t bytes;
             while ((bytes = read(file, buffer, sizeof(buffer))) > 0) {
-                send(client_socket, buffer, bytes, 0);
+                if (send(client_socket, buffer, bytes, 0) != bytes) {
+                    perror("Failed to send file data");
+                    break;
+                }
             }
 
             close(file);
